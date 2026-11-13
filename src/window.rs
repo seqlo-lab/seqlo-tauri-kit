@@ -68,6 +68,9 @@ const CTX_REFRESH: &str = "ctx_refresh";
 const ASSET_COVER: &str = "asset_cover";
 const ASSET_ARCHIVE: &str = "asset_archive";
 const ASSET_REVEAL: &str = "asset_reveal";
+/// 「加入合集」子菜单项 id 前缀，编码为 `asset_add_collection:assetId:collectionId`。
+/// 子项由前端传入的合集列表动态生成（见 [`ContextCollection`]）。
+const ASSET_ADD_COLLECTION: &str = "asset_add_collection";
 
 /// 素材库空白区右键菜单项 id（新建合集）。无 `:id` 后缀，直接作为动作名回传前端。
 const COLLECTION_NEW: &str = "collection_new";
@@ -825,6 +828,14 @@ pub fn build_app_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> 
     Menu::with_items(app, &[&app_menu, &file, &edit, &view, &window, &help])
 }
 
+/// 前端传入的合集引用（素材右键「加入合集」子菜单的数据源）。
+/// 由桌面壳 `popup_context_menu` 从 JS 反序列化后交给 [`build_context_menu`]。
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct ContextCollection {
+    pub id: String,
+    pub name: String,
+}
+
 /// 右键上下文菜单：按前端传来的 `target` / `id` 动态构建。
 ///
 /// - `target == "project"`：工程卡片（打开 / 归档工程 / 删除），见 HomeView。
@@ -840,6 +851,8 @@ pub fn build_context_menu<R: Runtime>(
     asset_type: &str,
     is_orphan: bool,
     is_in_project: bool,
+    collections: &[ContextCollection],
+    asset_collections: &[String],
 ) -> tauri::Result<Menu<R>> {
     match target {
         "project" => {
@@ -851,7 +864,15 @@ pub fn build_context_menu<R: Runtime>(
                 MenuItem::with_id(app, format!("{CTX_DELETE}:{id}"), "删除工程", true, None::<&str>)?;
             Menu::with_items(app, &[&open, &archive, &sep, &delete])
         }
-        "asset" => build_asset_context_menu(app, id, asset_type, is_orphan, is_in_project),
+        "asset" => build_asset_context_menu(
+            app,
+            id,
+            asset_type,
+            is_orphan,
+            is_in_project,
+            collections,
+            asset_collections,
+        ),
         // 素材库空白区：替换浏览器默认右键，只给一个「新建合集」入口。
         "blank" => {
             let new_coll =
@@ -867,6 +888,9 @@ pub fn build_context_menu<R: Runtime>(
 
 /// 素材卡片右键菜单（原生，按素材状态条件显隐）：
 ///
+/// - **加入合集**：仅当工程内存在合集时显示，置于菜单最顶部；子项为各合集名称，
+///   点击把素材加入该合集（id 编码 `asset_add_collection:assetId:collectionId`）。
+///   已属该合集的子项打勾并置灰（不可重复加入）。
 /// - **设为工程封面**：仅图片类（`ASSET_COVER_TYPES`）且非脱链；音频 / 视频 / 脱链不显示。
 /// - **在文件管理器打开**：始终显示；文件缺失时命令给友好报错。
 /// - **归档到工程内**：仅外部素材（`is_in_project == false`）且文件在位（`!is_orphan`）。
@@ -878,6 +902,8 @@ fn build_asset_context_menu<R: Runtime>(
     asset_type: &str,
     is_orphan: bool,
     is_in_project: bool,
+    collections: &[ContextCollection],
+    asset_collections: &[String],
 ) -> tauri::Result<Menu<R>> {
     let cover = MenuItem::with_id(
         app,
@@ -901,7 +927,38 @@ fn build_asset_context_menu<R: Runtime>(
         None::<&str>,
     )?;
 
+    // 「加入合集」子菜单：合集列表为空则不显示。子项为合集名，已属的打勾并置灰。
+    let mut coll_items: Vec<MenuItem<R>> = Vec::new();
+    for c in collections {
+        let already = asset_collections.iter().any(|x| x == &c.id);
+        let label = if already {
+            format!("✓ {}", c.name)
+        } else {
+            c.name.clone()
+        };
+        coll_items.push(MenuItem::with_id(
+            app,
+            format!("{ASSET_ADD_COLLECTION}:{id}:{}", c.id),
+            label,
+            !already,
+            None::<&str>,
+        )?);
+    }
+    let coll_refs: Vec<&dyn IsMenuItem<R>> =
+        coll_items.iter().map(|m| m as &dyn IsMenuItem<R>).collect();
+    let add_coll = if coll_refs.is_empty() {
+        None
+    } else {
+        Some(Submenu::with_items(app, "加入合集", true, &coll_refs)?)
+    };
+    let sep = PredefinedMenuItem::separator(app)?;
+
     let mut items: Vec<&dyn IsMenuItem<R>> = Vec::new();
+    // 加入合集置顶（有合集时），与其余动作之间加一条分隔线。
+    if let Some(sub) = &add_coll {
+        items.push(sub);
+        items.push(&sep);
+    }
     if ASSET_COVER_TYPES.contains(&asset_type) && !is_orphan {
         items.push(&cover);
     }
