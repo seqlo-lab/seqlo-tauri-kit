@@ -62,6 +62,10 @@ const CTX_OPEN: &str = "ctx_open";
 const CTX_ARCHIVE: &str = "ctx_archive";
 const CTX_DELETE: &str = "ctx_delete";
 const CTX_REFRESH: &str = "ctx_refresh";
+/// 工程卡片右键菜单项 id（与前端 `nativeMenu.ts` 常量一致；打开/归档/删除复用 `CTX_*`）。
+const PROJECT_REVEAL: &str = "project_reveal";
+const PROJECT_RENAME: &str = "project_rename";
+const PROJECT_REINDEX: &str = "project_reindex";
 
 /// 素材卡片右键菜单项 id（与前端 `nativeMenu.ts` 常量一致）。
 /// id 编码为 `动作:assetId`，由 `on_menu_event` 经 `menu-action` 事件回传前端按前缀分发。
@@ -838,9 +842,11 @@ pub struct ContextCollection {
 
 /// 右键上下文菜单：按前端传来的 `target` / `id` 动态构建。
 ///
-/// - `target == "project"`：工程卡片（打开 / 归档工程 / 删除），见 HomeView。
-/// - `target == "asset"`：素材卡片，项按 `asset_type` / `is_orphan` / `is_in_project` 条件显隐（见下）。
+/// - `target == "project"`：工程卡片（打开 / 在文件管理器打开 / 重命名 / 补登索引 /
+///   归档 / 删除），项按 `is_archived` / `is_reachable` / `is_index_missing` 条件显隐。
+/// - `target == "asset"`：素材卡片，项按 `asset_type` / `is_orphan` / `is_in_project` 条件显隐。
 /// - `target == "blank"`：素材库空白区（新建合集），见 AssetsView 的 `data-ctx="assets-blank"`。
+/// - `target == "projects-blank"`：首页空白区（新建工程），见 HomeView 的 `data-ctx="projects-blank"`。
 /// - 其它：`刷新`（占位）。
 ///
 /// 业务动作均通过 `menu-action` 事件交给前端处理（本函数只负责组装原生菜单）。
@@ -853,17 +859,12 @@ pub fn build_context_menu<R: Runtime>(
     is_in_project: bool,
     collections: &[ContextCollection],
     asset_collections: &[String],
+    is_archived: bool,
+    is_reachable: bool,
+    is_index_missing: bool,
 ) -> tauri::Result<Menu<R>> {
     match target {
-        "project" => {
-            let open = MenuItem::with_id(app, format!("{CTX_OPEN}:{id}"), "打开工程", true, None::<&str>)?;
-            let archive =
-                MenuItem::with_id(app, format!("{CTX_ARCHIVE}:{id}"), "归档工程", true, None::<&str>)?;
-            let sep = PredefinedMenuItem::separator(app)?;
-            let delete =
-                MenuItem::with_id(app, format!("{CTX_DELETE}:{id}"), "删除工程", true, None::<&str>)?;
-            Menu::with_items(app, &[&open, &archive, &sep, &delete])
-        }
+        "project" => build_project_context_menu(app, id, is_archived, is_reachable, is_index_missing),
         "asset" => build_asset_context_menu(
             app,
             id,
@@ -879,11 +880,91 @@ pub fn build_context_menu<R: Runtime>(
                 MenuItem::with_id(app, COLLECTION_NEW, "新建合集", true, None::<&str>)?;
             Menu::with_items(app, &[&new_coll])
         }
+        // 首页空白区：新建工程。复用顶层「文件-新建工程」的 id，前端已接线（置票据 + 导航首页）。
+        "projects-blank" => {
+            let new_proj =
+                MenuItem::with_id(app, FILE_NEW_PROJECT, "新建工程", true, None::<&str>)?;
+            Menu::with_items(app, &[&new_proj])
+        }
         _ => Menu::with_items(
             app,
             &[&MenuItem::with_id(app, CTX_REFRESH, "刷新", true, None::<&str>)?],
         ),
     }
+}
+
+/// 工程卡片右键菜单（原生，按工程状态条件显隐）：
+///
+/// - **打开工程 / 在文件管理器打开 / 重命名**：工程可达（`is_reachable`）时可用，否则置灰。
+/// - **补登索引**：仅「索引缺失」态（`is_index_missing`）显示。
+/// - **归档工程**：可达且未归档时显示（归档单向、会取消进行中任务，前端二次确认）。
+/// - **删除工程…**：始终显示（不可达工程也能用来清理死条目），前端二次确认。
+fn build_project_context_menu<R: Runtime>(
+    app: &AppHandle<R>,
+    id: &str,
+    is_archived: bool,
+    is_reachable: bool,
+    is_index_missing: bool,
+) -> tauri::Result<Menu<R>> {
+    let open = MenuItem::with_id(
+        app,
+        format!("{CTX_OPEN}:{id}"),
+        "打开工程",
+        is_reachable,
+        None::<&str>,
+    )?;
+    let reveal = MenuItem::with_id(
+        app,
+        format!("{PROJECT_REVEAL}:{id}"),
+        "在文件管理器打开",
+        is_reachable,
+        None::<&str>,
+    )?;
+    let rename = MenuItem::with_id(
+        app,
+        format!("{PROJECT_RENAME}:{id}"),
+        "重命名…",
+        is_reachable,
+        None::<&str>,
+    )?;
+    let reindex = MenuItem::with_id(
+        app,
+        format!("{PROJECT_REINDEX}:{id}"),
+        "补登索引",
+        true,
+        None::<&str>,
+    )?;
+    let archive = MenuItem::with_id(
+        app,
+        format!("{CTX_ARCHIVE}:{id}"),
+        "归档工程",
+        true,
+        None::<&str>,
+    )?;
+    let delete = MenuItem::with_id(
+        app,
+        format!("{CTX_DELETE}:{id}"),
+        "删除工程…",
+        true,
+        None::<&str>,
+    )?;
+    let sep1 = PredefinedMenuItem::separator(app)?;
+    let sep2 = PredefinedMenuItem::separator(app)?;
+
+    let mut items: Vec<&dyn IsMenuItem<R>> = Vec::new();
+    items.push(&open);
+    items.push(&reveal);
+    items.push(&sep1);
+    items.push(&rename);
+    if is_index_missing {
+        items.push(&reindex);
+    }
+    items.push(&sep2);
+    if is_reachable && !is_archived {
+        items.push(&archive);
+    }
+    items.push(&delete);
+    Menu::with_items(app, &items)
 }
 
 /// 素材卡片右键菜单（原生，按素材状态条件显隐）：
