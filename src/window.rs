@@ -69,6 +69,9 @@ const ASSET_COVER: &str = "asset_cover";
 const ASSET_ARCHIVE: &str = "asset_archive";
 const ASSET_REVEAL: &str = "asset_reveal";
 
+/// 素材库空白区右键菜单项 id（新建合集）。无 `:id` 后缀，直接作为动作名回传前端。
+const COLLECTION_NEW: &str = "collection_new";
+
 /// 可作工程封面的图片类素材（与 `seqlo_media_studio_core::cover::COVER_IMAGE_TYPES` 同步）。
 /// 音频 / 视频 / 脱链素材不应出现在「设为工程封面」里——core 的 `project_set_cover` 也会拒收。
 const ASSET_COVER_TYPES: [&str; 3] = ["frame", "generated_image", "imported_image"];
@@ -826,6 +829,7 @@ pub fn build_app_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> 
 ///
 /// - `target == "project"`：工程卡片（打开 / 归档工程 / 删除），见 HomeView。
 /// - `target == "asset"`：素材卡片，项按 `asset_type` / `is_orphan` / `is_in_project` 条件显隐（见下）。
+/// - `target == "blank"`：素材库空白区（新建合集），见 AssetsView 的 `data-ctx="assets-blank"`。
 /// - 其它：`刷新`（占位）。
 ///
 /// 业务动作均通过 `menu-action` 事件交给前端处理（本函数只负责组装原生菜单）。
@@ -848,6 +852,12 @@ pub fn build_context_menu<R: Runtime>(
             Menu::with_items(app, &[&open, &archive, &sep, &delete])
         }
         "asset" => build_asset_context_menu(app, id, asset_type, is_orphan, is_in_project),
+        // 素材库空白区：替换浏览器默认右键，只给一个「新建合集」入口。
+        "blank" => {
+            let new_coll =
+                MenuItem::with_id(app, COLLECTION_NEW, "新建合集", true, None::<&str>)?;
+            Menu::with_items(app, &[&new_coll])
+        }
         _ => Menu::with_items(
             app,
             &[&MenuItem::with_id(app, CTX_REFRESH, "刷新", true, None::<&str>)?],
