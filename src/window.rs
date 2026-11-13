@@ -70,7 +70,7 @@ const ASSET_ARCHIVE: &str = "asset_archive";
 const ASSET_REVEAL: &str = "asset_reveal";
 
 /// 可作工程封面的图片类素材（与 `seqlo_media_studio_core::cover::COVER_IMAGE_TYPES` 同步）。
-/// 音频 / 视频 / 脱链素材不应出现在「设为封面」里——core 的 `project_set_cover` 也会拒收。
+/// 音频 / 视频 / 脱链素材不应出现在「设为工程封面」里——core 的 `project_set_cover` 也会拒收。
 const ASSET_COVER_TYPES: [&str; 3] = ["frame", "generated_image", "imported_image"];
 
 /// 平台差异（单测可显式传入，运行时用 [`PLATFORM`]）。
@@ -857,7 +857,7 @@ pub fn build_context_menu<R: Runtime>(
 
 /// 素材卡片右键菜单（原生，按素材状态条件显隐）：
 ///
-/// - **设为封面**：仅图片类（`ASSET_COVER_TYPES`）且非脱链；音频 / 视频 / 脱链不显示。
+/// - **设为工程封面**：仅图片类（`ASSET_COVER_TYPES`）且非脱链；音频 / 视频 / 脱链不显示。
 /// - **在文件管理器打开**：始终显示；文件缺失时命令给友好报错。
 /// - **归档到工程内**：仅外部素材（`is_in_project == false`）且文件在位（`!is_orphan`）。
 ///   `asset_archive_external` 把外部文件复制进工程 `media/imported/`；脱链（文件已丢失）
@@ -872,7 +872,7 @@ fn build_asset_context_menu<R: Runtime>(
     let cover = MenuItem::with_id(
         app,
         format!("{ASSET_COVER}:{id}"),
-        "设为封面",
+        "设为工程封面",
         true,
         None::<&str>,
     )?;
