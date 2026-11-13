@@ -366,6 +366,24 @@ impl SplashController {
             }
         }
     }
+
+    /// 菜单「视图-切换主题」：在 light/dark 间翻转并同步原生窗口外观。
+    ///
+    /// 与前端 `store.toggleTheme` 同源但独立：菜单点击在 Rust 侧直接翻转原生外观，
+    /// 保证不依赖前端监听也能立刻生效（标题栏着色翻转）；同时通过 `theme-changed`
+    /// 事件把新主题交回前端，让其对齐 CSS 类与 `localStorage` 持久化，避免重启回退。
+    /// 翻转规则：light → dark、dark → light；尚未上报（unknown，前端 `isDark` 缺省 true）
+    /// 视为「当前是深色」，首次点击切到 light，避免「点了没反应」。
+    pub fn toggle_theme(&self, app: AppHandle) -> Result<String, String> {
+        let cur = self.app_theme.load(Ordering::SeqCst);
+        // 翻转规则：浅色 → 深色；深色 → 浅色。
+        // 未知态（前端没上报主题，如 watchdog 强制收尾）按「当前是深色」处理：
+        // 前端 isDark 缺省 true，首次点菜单应切到浅色，而不是让人觉得「点了没反应」。
+        let next_is_dark = cur == THEME_LIGHT;
+        let theme_str = if next_is_dark { "dark" } else { "light" };
+        self.set_theme(app, theme_str)?;
+        Ok(theme_str.to_string())
+    }
 }
 
 // ============ Tauri 命令（宿主在 generate_handler! 中注册） ============

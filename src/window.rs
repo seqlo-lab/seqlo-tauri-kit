@@ -35,9 +35,9 @@
 use serde_json::{json, Map, Value};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::Mutex;
-use tauri::menu::{Menu, MenuItem};
+use tauri::menu::{IsMenuItem, Menu, MenuItem, Submenu, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 pub use tauri::CloseRequestApi;
 
 use crate::config::ConfigSection;
@@ -47,6 +47,31 @@ pub const CLOSE_DIALOG_EVENT: &str = "wb:close-dialog";
 
 const MENU_SHOW: &str = "wb_tray_show";
 const MENU_QUIT: &str = "wb_tray_quit";
+
+// 应用菜单项 id（与 shell `on_menu_event` 派发保持一致）
+pub const APP_QUIT: &str = "app_quit";
+const APP_SETTINGS: &str = "app_settings";
+const FILE_NEW_PROJECT: &str = "file_new_project";
+const FILE_OPEN_PROJECT: &str = "file_open_project";
+pub const VIEW_TOGGLE_THEME: &str = "view_toggle_theme";
+const HELP_DOCS: &str = "help_docs";
+const EDIT_UNDO: &str = "edit_undo";
+const EDIT_REDO: &str = "edit_redo";
+// 右键上下文菜单 id 前缀（与 `target:id` 拼接）
+const CTX_OPEN: &str = "ctx_open";
+const CTX_ARCHIVE: &str = "ctx_archive";
+const CTX_DELETE: &str = "ctx_delete";
+const CTX_REFRESH: &str = "ctx_refresh";
+
+/// 素材卡片右键菜单项 id（与前端 `nativeMenu.ts` 常量一致）。
+/// id 编码为 `动作:assetId`，由 `on_menu_event` 经 `menu-action` 事件回传前端按前缀分发。
+const ASSET_COVER: &str = "asset_cover";
+const ASSET_ARCHIVE: &str = "asset_archive";
+const ASSET_REVEAL: &str = "asset_reveal";
+
+/// 可作工程封面的图片类素材（与 `seqlo_media_studio_core::cover::COVER_IMAGE_TYPES` 同步）。
+/// 音频 / 视频 / 脱链素材不应出现在「设为封面」里——core 的 `project_set_cover` 也会拒收。
+const ASSET_COVER_TYPES: [&str; 3] = ["frame", "generated_image", "imported_image"];
 
 /// 平台差异（单测可显式传入，运行时用 [`PLATFORM`]）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -720,6 +745,163 @@ fn set_taskbar_visible(app: &AppHandle, visible: bool) {
 
 #[cfg(not(target_os = "windows"))]
 fn set_taskbar_visible(_app: &AppHandle, _visible: bool) {}
+
+/// 完全中文化的应用菜单，替代 Tauri 默认英文菜单。
+///
+/// - macOS：第一个子菜单会被系统接管为「应用菜单」（标题替换为 App 名），
+///   内含 关于 / 设置 / 退出；编辑菜单自动获得系统「书写工具」。
+/// - Win/Linux：第一个子菜单是普通「Seqlo」子菜单。
+///
+/// 预定义项（复制/剪切/粘贴/全选/最小化/缩放/关闭窗口/关于）由 Tauri 原生处理；
+/// 业务项通过 `on_menu_event` 派发，宿主需按下表接线（前端桥见
+/// `seqlo-media-studio-web/src/features/shell/nativeMenu.ts`）：
+///
+/// | 事件 | payload | 语义 |
+/// |---|---|---|
+/// | `menu-action` | 菜单 id 字符串 | 设置 / 新建 / 打开 / 帮助 / 撤销 / 重做 / 右键项 |
+/// | `theme-changed` | `"light"` / `"dark"` | Rust 已翻转原生外观，前端对齐 CSS + localStorage，**不要**回写 `set_window_theme` |
+/// | — | — | `APP_QUIT` 直接 `WindowController::quit`，不发事件 |
+///
+/// 注意「切换主题」由宿主在 Rust 侧直接调用 `SplashController::toggle_theme` 完成
+/// （原生窗口外观不依赖前端），不走 `menu-action`；这样菜单在前端还没挂载时也能生效。
+pub fn build_app_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
+    let about = PredefinedMenuItem::about(app, Some("关于 Seqlo Media Studio"), None)?;
+    let settings = MenuItem::with_id(app, APP_SETTINGS, "设置…", true, Some("CmdOrCtrl+,"))?;
+    let quit = MenuItem::with_id(app, APP_QUIT, "退出 Seqlo", true, Some("CmdOrCtrl+Q"))?;
+    let app_menu = Submenu::with_items(app, "Seqlo", true, &[&about, &settings, &quit])?;
+
+    let file = Submenu::with_items(
+        app,
+        "文件",
+        true,
+        &[
+            &MenuItem::with_id(app, FILE_NEW_PROJECT, "新建工程", true, Some("CmdOrCtrl+N"))?,
+            &MenuItem::with_id(app, FILE_OPEN_PROJECT, "打开工程…", true, Some("CmdOrCtrl+O"))?,
+            &PredefinedMenuItem::close_window(app, Some("关闭窗口"))?,
+        ],
+    )?;
+
+    let edit = Submenu::with_items(
+        app,
+        "编辑",
+        true,
+        &[
+            &MenuItem::with_id(app, EDIT_UNDO, "撤销", true, Some("CmdOrCtrl+Z"))?,
+            &MenuItem::with_id(app, EDIT_REDO, "重做", true, Some("CmdOrCtrl+Shift+Z"))?,
+            &PredefinedMenuItem::cut(app, Some("剪切"))?,
+            &PredefinedMenuItem::copy(app, Some("复制"))?,
+            &PredefinedMenuItem::paste(app, Some("粘贴"))?,
+            &PredefinedMenuItem::select_all(app, Some("全选"))?,
+        ],
+    )?;
+
+    let view = Submenu::with_items(
+        app,
+        "视图",
+        true,
+        &[&MenuItem::with_id(app, VIEW_TOGGLE_THEME, "切换主题", true, None::<&str>)?],
+    )?;
+
+    let window = Submenu::with_items(
+        app,
+        "窗口",
+        true,
+        &[
+            &PredefinedMenuItem::minimize(app, Some("最小化"))?,
+            &PredefinedMenuItem::maximize(app, Some("缩放"))?,
+        ],
+    )?;
+
+    let help = Submenu::with_items(
+        app,
+        "帮助",
+        true,
+        &[&MenuItem::with_id(app, HELP_DOCS, "文档", true, None::<&str>)?],
+    )?;
+
+    Menu::with_items(app, &[&app_menu, &file, &edit, &view, &window, &help])
+}
+
+/// 右键上下文菜单：按前端传来的 `target` / `id` 动态构建。
+///
+/// - `target == "project"`：工程卡片（打开 / 归档工程 / 删除），见 HomeView。
+/// - `target == "asset"`：素材卡片，项按 `asset_type` / `is_orphan` / `is_in_project` 条件显隐（见下）。
+/// - 其它：`刷新`（占位）。
+///
+/// 业务动作均通过 `menu-action` 事件交给前端处理（本函数只负责组装原生菜单）。
+pub fn build_context_menu<R: Runtime>(
+    app: &AppHandle<R>,
+    target: &str,
+    id: &str,
+    asset_type: &str,
+    is_orphan: bool,
+    is_in_project: bool,
+) -> tauri::Result<Menu<R>> {
+    match target {
+        "project" => {
+            let open = MenuItem::with_id(app, format!("{CTX_OPEN}:{id}"), "打开工程", true, None::<&str>)?;
+            let archive =
+                MenuItem::with_id(app, format!("{CTX_ARCHIVE}:{id}"), "归档工程", true, None::<&str>)?;
+            let sep = PredefinedMenuItem::separator(app)?;
+            let delete =
+                MenuItem::with_id(app, format!("{CTX_DELETE}:{id}"), "删除工程", true, None::<&str>)?;
+            Menu::with_items(app, &[&open, &archive, &sep, &delete])
+        }
+        "asset" => build_asset_context_menu(app, id, asset_type, is_orphan, is_in_project),
+        _ => Menu::with_items(
+            app,
+            &[&MenuItem::with_id(app, CTX_REFRESH, "刷新", true, None::<&str>)?],
+        ),
+    }
+}
+
+/// 素材卡片右键菜单（原生，按素材状态条件显隐）：
+///
+/// - **设为封面**：仅图片类（`ASSET_COVER_TYPES`）且非脱链；音频 / 视频 / 脱链不显示。
+/// - **在文件管理器打开**：始终显示；文件缺失时命令给友好报错。
+/// - **归档到工程内**：仅外部素材（`is_in_project == false`）且文件在位（`!is_orphan`）。
+///   `asset_archive_external` 把外部文件复制进工程 `media/imported/`；脱链（文件已丢失）
+///   或已在工程内的素材无法也不需归档，故不显示。
+fn build_asset_context_menu<R: Runtime>(
+    app: &AppHandle<R>,
+    id: &str,
+    asset_type: &str,
+    is_orphan: bool,
+    is_in_project: bool,
+) -> tauri::Result<Menu<R>> {
+    let cover = MenuItem::with_id(
+        app,
+        format!("{ASSET_COVER}:{id}"),
+        "设为封面",
+        true,
+        None::<&str>,
+    )?;
+    let reveal = MenuItem::with_id(
+        app,
+        format!("{ASSET_REVEAL}:{id}"),
+        "在文件管理器打开",
+        true,
+        None::<&str>,
+    )?;
+    let archive = MenuItem::with_id(
+        app,
+        format!("{ASSET_ARCHIVE}:{id}"),
+        "归档到工程内",
+        true,
+        None::<&str>,
+    )?;
+
+    let mut items: Vec<&dyn IsMenuItem<R>> = Vec::new();
+    if ASSET_COVER_TYPES.contains(&asset_type) && !is_orphan {
+        items.push(&cover);
+    }
+    items.push(&reveal);
+    // 归档：仅外部素材（路径在工程目录外）且文件在位。
+    if !is_in_project && !is_orphan {
+        items.push(&archive);
+    }
+    Menu::with_items(app, &items)
+}
 
 impl WindowController {
     /// 创建托盘（幂等：已存在则直接返回）。必须在主线程调用。
