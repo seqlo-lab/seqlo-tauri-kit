@@ -75,6 +75,9 @@ const ASSET_REVEAL: &str = "asset_reveal";
 /// 「加入合集」子菜单项 id 前缀，编码为 `asset_add_collection:assetId:collectionId`。
 /// 子项由前端传入的合集列表动态生成（见 [`ContextCollection`]）。
 const ASSET_ADD_COLLECTION: &str = "asset_add_collection";
+/// 素材「删除」项 id 前缀，编码为 `asset_delete:assetId`。二次确认与「同时删除文件」
+/// 勾选在前端做（见 web `nativeMenu.ts` 的 `deleteAssetPending`）。
+const ASSET_DELETE: &str = "asset_delete";
 
 /// 素材库空白区右键菜单项 id（新建合集）。无 `:id` 后缀，直接作为动作名回传前端。
 const COLLECTION_NEW: &str = "collection_new";
@@ -977,6 +980,8 @@ fn build_project_context_menu<R: Runtime>(
 /// - **归档到工程内**：仅外部素材（`is_in_project == false`）且文件在位（`!is_orphan`）。
 ///   `asset_archive_external` 把外部文件复制进工程 `media/imported/`；脱链（文件已丢失）
 ///   或已在工程内的素材无法也不需归档，故不显示。
+/// - **删除素材**：始终显示；有下游 / 被任务引用时后端拒绝。二次确认与「同时删除文件」
+///   勾选在前端弹窗里做，原生菜单只负责把 assetId 递回去。
 fn build_asset_context_menu<R: Runtime>(
     app: &AppHandle<R>,
     id: &str,
@@ -1004,6 +1009,13 @@ fn build_asset_context_menu<R: Runtime>(
         app,
         format!("{ASSET_ARCHIVE}:{id}"),
         "归档到工程内",
+        true,
+        None::<&str>,
+    )?;
+    let delete = MenuItem::with_id(
+        app,
+        format!("{ASSET_DELETE}:{id}"),
+        "删除素材",
         true,
         None::<&str>,
     )?;
@@ -1048,6 +1060,7 @@ fn build_asset_context_menu<R: Runtime>(
     if !is_in_project && !is_orphan {
         items.push(&archive);
     }
+    items.push(&delete);
     Menu::with_items(app, &items)
 }
 
