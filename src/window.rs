@@ -396,8 +396,11 @@ pub struct WindowAssets {
     pub menu_show_label: String,
     /// 托盘菜单「退出」文案。
     pub menu_quit_label: String,
-    /// macOS 模板图（单色 + alpha）；非 macOS 忽略，改用默认窗口图标。
+    /// macOS 模板图（单色 + alpha）；仅 macOS 使用。
     pub mac_tray_png: Option<Vec<u8>>,
+    /// 其它平台（Windows/Linux）注入的彩色托盘图，可带光晕；
+    /// 未提供时回退默认窗口图标，保持 kit 不绑定任何具体图标。
+    pub win_tray_png: Option<Vec<u8>>,
 }
 
 impl Default for WindowAssets {
@@ -409,6 +412,7 @@ impl Default for WindowAssets {
             menu_show_label: "显示主窗口".to_string(),
             menu_quit_label: "退出".to_string(),
             mac_tray_png: None,
+            win_tray_png: None,
         }
     }
 }
@@ -1124,10 +1128,16 @@ impl WindowController {
         }
         #[cfg(not(target_os = "macos"))]
         {
-            // Windows 用彩色应用图标；模板模式是 macOS 专属语义，这里不设
-            match app.default_window_icon().cloned() {
+            // 模板模式是 macOS 专属语义，这里不设。优先用宿主注入的托盘图
+            // （可与桌面图标不同：例如仅在托盘保留星光光晕），缺省仍回退默认窗口图标。
+            let injected = self.assets.win_tray_png.as_ref().and_then(|bytes| {
+                tauri::image::Image::from_bytes(bytes)
+                    .map_err(|e| eprintln!("[TRAY] 注入托盘图解析失败：{e}"))
+                    .ok()
+            });
+            match injected.or_else(|| app.default_window_icon().cloned()) {
                 Some(icon) => builder = builder.icon(icon),
-                None => eprintln!("[TRAY] 未取到默认窗口图标，托盘使用系统占位图标"),
+                None => eprintln!("[TRAY] 未取到托盘图标，托盘使用系统占位图标"),
             }
         }
 
