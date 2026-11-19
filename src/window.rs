@@ -78,6 +78,9 @@ const ASSET_ADD_COLLECTION: &str = "asset_add_collection";
 /// 素材「删除」项 id 前缀，编码为 `asset_delete:assetId`。二次确认与「同时删除文件」
 /// 勾选在前端做（见 web `nativeMenu.ts` 的 `deleteAssetPending`）。
 const ASSET_DELETE: &str = "asset_delete";
+/// 素材「重命名…」项 id 前缀，编码为 `asset_rename:assetId`。就地改名输入框在前端
+/// （见 web `nativeMenu.ts` 的 `renameAssetPending` / AssetsView 的 `startEditFromCard`）。
+const ASSET_RENAME: &str = "asset_rename";
 
 /// 素材库空白区右键菜单项 id（新建合集）。无 `:id` 后缀，直接作为动作名回传前端。
 const COLLECTION_NEW: &str = "collection_new";
@@ -976,6 +979,7 @@ fn build_project_context_menu<R: Runtime>(
 ///   点击把素材加入该合集（id 编码 `asset_add_collection:assetId:collectionId`）。
 ///   已属该合集的子项打勾并置灰（不可重复加入）。
 /// - **设为工程封面**：仅图片类（`ASSET_COVER_TYPES`）且非脱链；音频 / 视频 / 脱链不显示。
+/// - **重命名…**：始终显示；就地改名输入框与落库在前端，原生菜单只递 assetId。
 /// - **在文件管理器打开**：始终显示；文件缺失时命令给友好报错。
 /// - **归档到工程内**：仅外部素材（`is_in_project == false`）且文件在位（`!is_orphan`）。
 ///   `asset_archive_external` 把外部文件复制进工程 `media/imported/`；脱链（文件已丢失）
@@ -995,6 +999,13 @@ fn build_asset_context_menu<R: Runtime>(
         app,
         format!("{ASSET_COVER}:{id}"),
         "设为工程封面",
+        true,
+        None::<&str>,
+    )?;
+    let rename = MenuItem::with_id(
+        app,
+        format!("{ASSET_RENAME}:{id}"),
+        "重命名…",
         true,
         None::<&str>,
     )?;
@@ -1055,6 +1066,7 @@ fn build_asset_context_menu<R: Runtime>(
     if ASSET_COVER_TYPES.contains(&asset_type) && !is_orphan {
         items.push(&cover);
     }
+    items.push(&rename);
     items.push(&reveal);
     // 归档：仅外部素材（路径在工程目录外）且文件在位。
     if !is_in_project && !is_orphan {
