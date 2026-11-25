@@ -35,7 +35,7 @@
 use serde_json::{json, Map, Value};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::Mutex;
-use tauri::menu::{IsMenuItem, Menu, MenuItem, Submenu, PredefinedMenuItem};
+use tauri::menu::{CheckMenuItem, IsMenuItem, Menu, MenuItem, Submenu, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 pub use tauri::CloseRequestApi;
@@ -54,6 +54,9 @@ const APP_SETTINGS: &str = "app_settings";
 const FILE_NEW_PROJECT: &str = "file_new_project";
 const FILE_OPEN_PROJECT: &str = "file_open_project";
 pub const VIEW_TOGGLE_THEME: &str = "view_toggle_theme";
+/// 「视图-面板」勾选项 id 前缀，与前端 nativeMenu.ts 的 VIEW_PANEL_PREFIX 一致。
+/// 实际 id 编码为 `view_panel:<panelId>`，经 on_menu_event → menu-action 回前端按前缀分发。
+pub const VIEW_PANEL_PREFIX: &str = "view_panel:";
 const HELP_DOCS: &str = "help_docs";
 const EDIT_UNDO: &str = "edit_undo";
 const EDIT_REDO: &str = "edit_redo";
@@ -811,12 +814,113 @@ pub fn build_app_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> 
         ],
     )?;
 
-    let view = Submenu::with_items(
+    let view = build_view_submenu(app, &[])?;
+
+    let window = Submenu::with_items(
         app,
-        "视图",
+        "窗口",
         true,
-        &[&MenuItem::with_id(app, VIEW_TOGGLE_THEME, "切换主题", true, None::<&str>)?],
+        &[
+            &PredefinedMenuItem::minimize(app, Some("最小化"))?,
+            &PredefinedMenuItem::maximize(app, Some("缩放"))?,
+        ],
     )?;
+
+    let help = Submenu::with_items(
+        app,
+        "帮助",
+        true,
+        &[&MenuItem::with_id(app, HELP_DOCS, "文档", true, None::<&str>)?],
+    )?;
+
+    Menu::with_items(app, &[&app_menu, &file, &edit, &view, &window, &help])
+}
+
+/// 前端推送的「视图-面板」勾选项（与 web `NativeViewPanel` 对应）。
+/// 由桌面壳 `sync_view_panels` 命令从 JS 反序列化，用于动态重建视图子菜单。
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct ViewPanel {
+    pub id: String,
+    pub title: String,
+    pub open: bool,
+}
+
+/// 构建「视图」子菜单：固定的「切换主题」+ 分隔线 + 当前页面板勾选组（无面板时只留切换主题）。
+///
+/// 面板项用 [`CheckMenuItem`]：勾选态反映前端 `openSet`，点按经 `menu-action` 回
+/// `view_panel:<id>`，由前端 togglePanel 后再推一次新清单重建，勾选态始终以页面为真相。
+fn build_view_submenu<R: Runtime>(
+    app: &AppHandle<R>,
+    panels: &[ViewPanel],
+) -> tauri::Result<Submenu<R>> {
+    let toggle_theme =
+        MenuItem::with_id(app, VIEW_TOGGLE_THEME, "切换主题", true, None::<&str>)?;
+
+    if panels.is_empty() {
+        return Submenu::with_items(app, "视图", true, &[&toggle_theme]);
+    }
+
+    let separator = PredefinedMenuItem::separator(app)?;
+    // 与 &toggle_theme / &separator 统一装进同一个 Vec，借用类型抹平。
+    let mut items: Vec<&dyn IsMenuItem<R>> = vec![&toggle_theme, &separator];
+    let checks: Vec<CheckMenuItem<R>> = panels
+        .iter()
+        .map(|p| {
+            CheckMenuItem::with_id(
+                app,
+                format!("{VIEW_PANEL_PREFIX}{}", p.id),
+                p.title.as_str(),
+                true,
+                p.open,
+                None::<&str>,
+            )
+        })
+        .collect::<tauri::Result<Vec<_>>>()?;
+    for c in &checks {
+        items.push(c);
+    }
+    Submenu::with_items(app, "视图", true, &items)
+}
+
+/// 按当前页面板清单重建整套应用菜单（仅「视图」子菜单与初始构建不同，其余原样）。
+///
+/// Tauri 2 没有「原地替换某个子菜单」的窄接口，重建整棵菜单再 `window.set_menu`
+/// 替换是官方支持路径；菜单事件仍走全局 `on_menu_event`，重建不影响监听。
+pub fn build_app_menu_with_panels<R: Runtime>(
+    app: &AppHandle<R>,
+    panels: &[ViewPanel],
+) -> tauri::Result<Menu<R>> {
+    let about = PredefinedMenuItem::about(app, Some("关于 Seqlo Media Studio"), None)?;
+    let settings = MenuItem::with_id(app, APP_SETTINGS, "设置…", true, Some("CmdOrCtrl+,"))?;
+    let quit = MenuItem::with_id(app, APP_QUIT, "退出 Seqlo", true, Some("CmdOrCtrl+Q"))?;
+    let app_menu = Submenu::with_items(app, "Seqlo", true, &[&about, &settings, &quit])?;
+
+    let file = Submenu::with_items(
+        app,
+        "文件",
+        true,
+        &[
+            &MenuItem::with_id(app, FILE_NEW_PROJECT, "新建工程", true, Some("CmdOrCtrl+N"))?,
+            &MenuItem::with_id(app, FILE_OPEN_PROJECT, "打开工程…", true, Some("CmdOrCtrl+O"))?,
+            &PredefinedMenuItem::close_window(app, Some("关闭窗口"))?,
+        ],
+    )?;
+
+    let edit = Submenu::with_items(
+        app,
+        "编辑",
+        true,
+        &[
+            &MenuItem::with_id(app, EDIT_UNDO, "撤销", true, Some("CmdOrCtrl+Z"))?,
+            &MenuItem::with_id(app, EDIT_REDO, "重做", true, Some("CmdOrCtrl+Shift+Z"))?,
+            &PredefinedMenuItem::cut(app, Some("剪切"))?,
+            &PredefinedMenuItem::copy(app, Some("复制"))?,
+            &PredefinedMenuItem::paste(app, Some("粘贴"))?,
+            &PredefinedMenuItem::select_all(app, Some("全选"))?,
+        ],
+    )?;
+
+    let view = build_view_submenu(app, panels)?;
 
     let window = Submenu::with_items(
         app,
